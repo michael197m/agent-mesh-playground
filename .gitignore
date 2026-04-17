@@ -1,0 +1,21 @@
+# OS/editor noise
+.DS_Store
+.codex
+.gocache/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+
+# Runtime data and logs
+runtime/*.db
+runtime/*.db-shm
+runtime/*.db-wal
+runtime/logs/*.log
+
+# Service-local SQLite state
+services/api-gateway/*.db
+services/api-gateway/*.db-shm
+services/api-gateway/*.db-wal
