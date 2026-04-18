@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Event } from "../../../shared/event-schema/event";
-import { fetchWorkflowEvents } from "../lib/api";
+import { fetchWorkflowEvents, openWorkflowEventStream } from "../lib/api";
 
 interface WorkflowEventsState {
   events: Event[];
@@ -18,18 +18,15 @@ function sortEvents(events: Event[]): Event[] {
   });
 }
 
-function areEventsEqual(left: Event[], right: Event[]): boolean {
-  if (left.length !== right.length) {
-    return false;
+function mergeEvents(current: Event[], incoming: Event[]): Event[] {
+  const byID = new Map(current.map((event) => [event.id, event]));
+  for (const event of incoming) {
+    byID.set(event.id, event);
   }
-
-  return left.every((event, index) => {
-    const other = right[index];
-    return JSON.stringify(event) === JSON.stringify(other);
-  });
+  return sortEvents([...byID.values()]);
 }
 
-export function useWorkflowEvents(workflowId: string | null, pollIntervalMs = 2000): WorkflowEventsState {
+export function useWorkflowEvents(workflowId: string | null): WorkflowEventsState {
   const [events, setEvents] = useState<Event[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,16 +40,26 @@ export function useWorkflowEvents(workflowId: string | null, pollIntervalMs = 20
     }
 
     let cancelled = false;
+    let stream: EventSource | null = null;
 
     async function loadEvents(activeWorkflowId: string) {
-      setIsLoading((current) => current || events.length === 0);
+      setIsLoading(true);
       try {
         const nextEvents = sortEvents(await fetchWorkflowEvents(activeWorkflowId));
         if (cancelled) {
           return;
         }
-        setEvents((current) => (areEventsEqual(current, nextEvents) ? current : nextEvents));
+        setEvents(nextEvents);
         setError(null);
+
+        stream = openWorkflowEventStream(activeWorkflowId, {
+          onEvent: (event) => {
+            if (cancelled) {
+              return;
+            }
+            setEvents((current) => mergeEvents(current, [event]));
+          },
+        });
       } catch (loadError) {
         if (cancelled) {
           return;
@@ -67,15 +74,12 @@ export function useWorkflowEvents(workflowId: string | null, pollIntervalMs = 20
     }
 
     void loadEvents(workflowId);
-    const intervalId = window.setInterval(() => {
-      void loadEvents(workflowId);
-    }, pollIntervalMs);
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      stream?.close();
     };
-  }, [workflowId, pollIntervalMs, events.length]);
+  }, [workflowId]);
 
   return useMemo(
     () => ({ events, isLoading, error }),

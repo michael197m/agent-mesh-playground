@@ -27,14 +27,35 @@ ensure_default_docs() {
     return
   fi
 
-  cat >"$DOCS_DIR/runbook.md" <<'EOF'
-# Sample Runbook
+  cat >"$DOCS_DIR/runbook_network_changes.md" <<'EOF'
+# Network Change Runbook
 
 Packet loss after a config update:
-- verify interface error counters
+- verify interface error counters on the affected edge device
 - compare the new config against the previous known-good version
-- rollback the change if impact is ongoing
-- inspect MTU, routing, and VPN tunnel health
+- rollback the change if impact is ongoing or packet loss exceeds the change window threshold
+- inspect MTU, routing, ACLs, and VPN tunnel health before approving further remediation
+EOF
+
+  cat >"$DOCS_DIR/incident_packet_loss_history.md" <<'EOF'
+# Incident History
+
+Recent packet loss incidents:
+- Toronto edge packet loss after route policy change: root cause was an MTU mismatch on the WAN uplink
+- Montreal VPN packet loss after firewall update: root cause was an ACL regression blocking fragmented traffic
+- Chicago branch packet loss after emergency rollback: root cause was partial rollback leaving asymmetric routes in place
+EOF
+
+  cat >"$DOCS_DIR/change_policy.md" <<'EOF'
+# Change Policy
+
+Production network rollbacks require explicit operator approval when the proposed action affects shared edge routing, firewalls, or customer-facing VPN services.
+
+Approval checklist:
+- confirm customer impact and blast radius
+- identify the previous known-good configuration
+- document rollback owner and validation steps
+- capture approval comment before execution
 EOF
 }
 

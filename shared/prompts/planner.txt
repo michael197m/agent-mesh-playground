@@ -8,6 +8,7 @@ Your job:
 You may request these tasks:
 - retrieval
 - classification
+- approval
 - response
 
 Return JSON in this exact shape:
@@ -16,6 +17,7 @@ Return JSON in this exact shape:
   "tasks": [
     { "type": "retrieval", "reason": "string" },
     { "type": "classification", "reason": "string" },
+    { "type": "approval", "reason": "string" },
     { "type": "response", "reason": "string" }
   ]
 }
@@ -23,4 +25,5 @@ Return JSON in this exact shape:
 Rules:
 - no markdown
 - no prose outside JSON
-- usually request all three tasks unless obviously unnecessary
+- request `approval` when the user is asking for rollback, production changes, risky remediation, or any operator action that should be gated
+- usually request retrieval, classification, and response unless obviously unnecessary

@@ -1,7 +1,9 @@
 import type { Event } from "../../../shared/event-schema/event";
+import type { WorkflowSummary } from "../lib/api";
 
 interface WorkflowResultProps {
   events: Event[];
+  summary: WorkflowSummary | null;
 }
 
 function lastEventForTopic(events: Event[], topic: string): Event | null {
@@ -25,7 +27,7 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 }
 
-export function WorkflowResult({ events }: WorkflowResultProps) {
+export function WorkflowResult({ events, summary }: WorkflowResultProps) {
   const completionEvent = lastEventForTopic(events, "mesh.workflow.completed");
   const failureEvent = lastEventForTopic(events, "mesh.workflow.failed");
   const responseEvent = lastEventForTopic(events, "mesh.result.response");
@@ -36,14 +38,17 @@ export function WorkflowResult({ events }: WorkflowResultProps) {
   const terminalPayload = terminalEvent?.payload ?? {};
   const responsePayload =
     responseEvent?.payload ??
+    summary?.response_result ??
     (terminalPayload.response_result as Record<string, unknown> | undefined) ??
     {};
   const classificationPayload =
     classificationEvent?.payload ??
+    summary?.classification_result ??
     (terminalPayload.classification_result as Record<string, unknown> | undefined) ??
     {};
   const retrievalPayload =
     retrievalEvent?.payload ??
+    summary?.retrieval_result ??
     (terminalPayload.retrieval_result as Record<string, unknown> | undefined) ??
     {};
 
@@ -51,9 +56,10 @@ export function WorkflowResult({ events }: WorkflowResultProps) {
   const recommendedActions = asStringArray(responsePayload.recommended_actions);
   const classification = asString(classificationPayload.classification_result);
   const retrievalSummary = asString(retrievalPayload.summary);
-  const intent = asString(terminalPayload.intent);
-  const failureReason = asString(terminalPayload.reason);
-  const isFailed = Boolean(failureEvent);
+  const intent = asString(summary?.intent) ?? asString(terminalPayload.intent);
+  const failureReason = asString(summary?.failure_reason) ?? asString(terminalPayload.reason);
+  const terminalStatus = summary?.status ?? (failureEvent ? "failed" : completionEvent ? "completed" : "");
+  const isFailed = terminalStatus === "failed";
 
   return (
     <section className="panel result-panel">
@@ -62,10 +68,10 @@ export function WorkflowResult({ events }: WorkflowResultProps) {
           <p className="eyebrow">Workflow Output</p>
           <h2>Latest Result</h2>
         </div>
-        {terminalEvent ? <span className={`pill ${isFailed ? "pill-failed" : "pill-succeeded"}`}>{isFailed ? "failed" : "completed"}</span> : null}
+        {terminalStatus ? <span className={`pill ${isFailed ? "pill-failed" : "pill-succeeded"}`}>{terminalStatus}</span> : null}
       </div>
 
-      {!terminalEvent ? (
+      {!terminalStatus ? (
         <div className="empty-state">Run a workflow to populate the final response panel.</div>
       ) : (
         <div className="result-grid">

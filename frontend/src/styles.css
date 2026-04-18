@@ -111,6 +111,27 @@ code {
   gap: 14px;
 }
 
+.scenario-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.scenario-chip {
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 999px;
+  background: rgba(240, 253, 250, 0.9);
+  color: var(--accent-strong);
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.scenario-chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .field-label,
 .status-label,
 .timeline-count,
@@ -156,6 +177,20 @@ code {
   box-shadow: none;
 }
 
+.secondary-button {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .session-details {
   display: grid;
   gap: 14px;
@@ -175,6 +210,47 @@ code {
 .session-details dd {
   margin: 0;
   word-break: break-all;
+}
+
+.history-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.history-item {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.92);
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-item-active {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: rgba(240, 253, 250, 0.95);
+}
+
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.history-meta {
+  color: var(--muted-soft);
+  font-size: 0.85rem;
+}
+
+.history-prompt {
+  margin: 10px 0;
+  color: var(--muted);
 }
 
 .status-grid {
@@ -227,6 +303,32 @@ code {
 
 .result-panel {
   min-height: 220px;
+}
+
+.approval-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.approval-input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 14px 16px;
+  resize: vertical;
+  color: inherit;
+}
+
+.approval-input:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.25);
+  border-color: rgba(15, 118, 110, 0.45);
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .result-grid {

@@ -23,8 +23,10 @@ type Workflow struct {
 
 type Store interface {
 	CreateWorkflow(ctx context.Context, workflow Workflow) error
-	SaveEvent(ctx context.Context, event eventschema.Event) error
+	GetWorkflow(ctx context.Context, workflowID string) (Workflow, error)
+	ListWorkflows(ctx context.Context, limit int) ([]Workflow, error)
 	ListWorkflowEvents(ctx context.Context, workflowID string) ([]eventschema.Event, error)
+	ListWorkflowEventsAfter(ctx context.Context, workflowID string, after time.Time, afterEventID string) ([]eventschema.Event, error)
 }
 
 type SQLiteStore struct {
@@ -75,47 +77,95 @@ func (s *SQLiteStore) CreateWorkflow(ctx context.Context, workflow Workflow) err
 	return nil
 }
 
-func (s *SQLiteStore) SaveEvent(ctx context.Context, event eventschema.Event) error {
-	payloadJSON, err := json.Marshal(event.Payload)
-	if err != nil {
-		return fmt.Errorf("marshal event payload: %w", err)
-	}
-
-	workflowID, _ := event.Payload["workflow_id"].(string)
-	correlationID, _ := event.Payload["correlation_id"].(string)
-	eventName, _ := event.Payload["event_name"].(string)
-
+func (s *SQLiteStore) GetWorkflow(ctx context.Context, workflowID string) (Workflow, error) {
 	const query = `
-		INSERT INTO workflow_events (
-			id,
-			workflow_id,
-			correlation_id,
-			event_name,
-			topic,
-			status,
-			source,
-			timestamp,
-			payload
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		SELECT id, correlation_id, prompt, status, created_at, updated_at
+		FROM workflows
+		WHERE id = ?
 	`
 
-	_, err = s.db.ExecContext(ctx, query,
-		event.ID,
-		workflowID,
-		correlationID,
-		eventName,
-		event.Topic,
-		string(event.Status),
-		event.Source,
-		event.Timestamp.UTC().Format(time.RFC3339Nano),
-		string(payloadJSON),
+	var workflow Workflow
+	var createdAt string
+	var updatedAt string
+
+	err := s.db.QueryRowContext(ctx, query, workflowID).Scan(
+		&workflow.ID,
+		&workflow.CorrelationID,
+		&workflow.Prompt,
+		&workflow.Status,
+		&createdAt,
+		&updatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("insert workflow event: %w", err)
+		if err == sql.ErrNoRows {
+			return Workflow{}, err
+		}
+		return Workflow{}, fmt.Errorf("query workflow: %w", err)
 	}
 
-	return nil
+	workflow.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("parse workflow created_at: %w", err)
+	}
+	workflow.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("parse workflow updated_at: %w", err)
+	}
+
+	return workflow, nil
+}
+
+func (s *SQLiteStore) ListWorkflows(ctx context.Context, limit int) ([]Workflow, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	const query = `
+		SELECT id, correlation_id, prompt, status, created_at, updated_at
+		FROM workflows
+		ORDER BY updated_at DESC, id DESC
+		LIMIT ?
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query workflows: %w", err)
+	}
+	defer rows.Close()
+
+	workflows := make([]Workflow, 0, limit)
+	for rows.Next() {
+		var workflow Workflow
+		var createdAt string
+		var updatedAt string
+
+		if err := rows.Scan(
+			&workflow.ID,
+			&workflow.CorrelationID,
+			&workflow.Prompt,
+			&workflow.Status,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan workflow: %w", err)
+		}
+
+		workflow.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse workflow created_at: %w", err)
+		}
+		workflow.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse workflow updated_at: %w", err)
+		}
+
+		workflows = append(workflows, workflow)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workflows: %w", err)
+	}
+
+	return workflows, nil
 }
 
 func (s *SQLiteStore) ListWorkflowEvents(ctx context.Context, workflowID string) ([]eventschema.Event, error) {
@@ -157,6 +207,56 @@ func (s *SQLiteStore) ListWorkflowEvents(ctx context.Context, workflowID string)
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate workflow events: %w", err)
+	}
+
+	return events, nil
+}
+
+func (s *SQLiteStore) ListWorkflowEventsAfter(ctx context.Context, workflowID string, after time.Time, afterEventID string) ([]eventschema.Event, error) {
+	const query = `
+		SELECT id, topic, status, source, timestamp, payload
+		FROM workflow_events
+		WHERE workflow_id = ?
+			AND (timestamp > ? OR (timestamp = ? AND id > ?))
+		ORDER BY timestamp ASC, id ASC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query,
+		workflowID,
+		after.UTC().Format(time.RFC3339Nano),
+		after.UTC().Format(time.RFC3339Nano),
+		afterEventID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query workflow events after cursor: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]eventschema.Event, 0)
+	for rows.Next() {
+		var rawTimestamp string
+		var rawPayload string
+		var event eventschema.Event
+		var status string
+
+		if err := rows.Scan(&event.ID, &event.Topic, &status, &event.Source, &rawTimestamp, &rawPayload); err != nil {
+			return nil, fmt.Errorf("scan workflow event: %w", err)
+		}
+
+		event.Status = eventschema.EventStatus(status)
+		event.Timestamp, err = time.Parse(time.RFC3339Nano, rawTimestamp)
+		if err != nil {
+			return nil, fmt.Errorf("parse workflow event timestamp: %w", err)
+		}
+		if err := json.Unmarshal([]byte(rawPayload), &event.Payload); err != nil {
+			return nil, fmt.Errorf("unmarshal workflow event payload: %w", err)
+		}
+
+		events = append(events, event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workflow events after cursor: %w", err)
 	}
 
 	return events, nil

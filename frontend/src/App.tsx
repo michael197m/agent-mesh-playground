@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
 import type { Event } from "../../shared/event-schema/event";
 import { RequestForm } from "./components/RequestForm";
+import { WorkflowHistory } from "./components/WorkflowHistory";
 import { StatusCards } from "./components/StatusCards";
+import { ApprovalPanel } from "./components/ApprovalPanel";
 import { WorkflowResult } from "./components/WorkflowResult";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
 import { useWorkflowEvents } from "./hooks/useWorkflowEvents";
+import { useWorkflowHistory } from "./hooks/useWorkflowHistory";
+import { useWorkflowSummary } from "./hooks/useWorkflowSummary";
 import { submitChat } from "./lib/api";
+import type { WorkflowSummary } from "./lib/api";
 
 interface WorkflowSession {
   workflowId: string;
@@ -33,6 +38,8 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { events, isLoading, error: eventsError } = useWorkflowEvents(session?.workflowId ?? null);
+  const { summary, error: summaryError } = useWorkflowSummary(session?.workflowId ?? null, events.length);
+  const { workflows, isLoading: historyLoading, error: historyError } = useWorkflowHistory(events.length + (session ? 1 : 0));
 
   const visibleEvents = useMemo(() => {
     if (events.length > 0 || !session) {
@@ -56,6 +63,14 @@ export default function App() {
     }
   }
 
+  function handleSelectWorkflow(workflow: WorkflowSummary) {
+    setSession({
+      workflowId: workflow.workflow_id,
+      correlationId: workflow.correlation_id,
+    });
+    setSubmitError(null);
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -69,6 +84,13 @@ export default function App() {
       <div className="layout-grid">
         <div className="left-column">
           <RequestForm isSubmitting={isSubmitting} onSubmit={handleSubmit} />
+          <WorkflowHistory
+            workflows={workflows}
+            activeWorkflowId={session?.workflowId ?? null}
+            isLoading={historyLoading}
+            error={historyError}
+            onSelect={handleSelectWorkflow}
+          />
           <section className="panel session-panel">
             <div className="panel-header">
               <div>
@@ -92,14 +114,22 @@ export default function App() {
             )}
             {submitError ? <p className="error-text">{submitError}</p> : null}
             {eventsError ? <p className="error-text">{eventsError}</p> : null}
-            {isLoading ? <p className="hint-text">Polling backend for workflow events...</p> : null}
-            <p className="hint-text">The frontend now polls the gateway event feed for the active workflow.</p>
+            {summaryError ? <p className="error-text">{summaryError}</p> : null}
+            {isLoading ? <p className="hint-text">Streaming backend workflow events...</p> : null}
+            {summary ? (
+              <p className="hint-text">
+                Status: {summary.status} · {summary.event_count} event(s) · updated {new Date(summary.updated_at).toLocaleTimeString()}
+              </p>
+            ) : (
+              <p className="hint-text">The frontend now streams the gateway event feed and uses the workflow summary endpoint for normalized state.</p>
+            )}
           </section>
         </div>
 
         <div className="right-column">
           <StatusCards events={visibleEvents} />
-          <WorkflowResult events={visibleEvents} />
+          <ApprovalPanel workflowId={session?.workflowId ?? null} events={visibleEvents} />
+          <WorkflowResult events={visibleEvents} summary={summary} />
           <WorkflowTimeline events={visibleEvents} />
         </div>
       </div>

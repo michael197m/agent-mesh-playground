@@ -15,6 +15,8 @@ import (
 
 const (
 	aggregatorConsumerName    = "aggregator-agent"
+	approvalRequiredTopic     = "mesh.approval.required"
+	approvalReceivedTopic     = "mesh.approval.received"
 	retrievalResultTopic      = "mesh.result.retrieval"
 	classificationResultTopic = "mesh.result.classification"
 	responseTaskTopic         = "mesh.task.response"
@@ -34,6 +36,8 @@ type Bus interface {
 type Store interface {
 	HasProcessed(ctx context.Context, consumerName, eventID string) (bool, error)
 	RecordResult(ctx context.Context, event eventschema.Event) (store.WorkflowState, error)
+	MarkApprovalRequired(ctx context.Context, event eventschema.Event) (store.WorkflowState, error)
+	MarkApprovalReceived(ctx context.Context, event eventschema.Event) (store.WorkflowState, error)
 	MarkCompleted(ctx context.Context, correlationID, completionEventID string) error
 	ListTimedOutWorkflows(ctx context.Context, deadline time.Time, limit int) ([]store.WorkflowState, error)
 	MarkFailed(ctx context.Context, correlationID, failureEventID, failureReason string) error
@@ -68,6 +72,12 @@ func EvaluateCompletion(state store.WorkflowState) CompletionDecision {
 	}
 	if state.FailedEventID != "" {
 		return CompletionDecision{Ready: false, Reason: "workflow already failed"}
+	}
+	if state.ApprovalRequiredEventID != "" && state.ApprovalDecision == "" {
+		return CompletionDecision{Ready: false, Reason: "waiting for operator approval"}
+	}
+	if state.ApprovalDecision == "rejected" {
+		return CompletionDecision{Ready: false, Reason: "approval rejected"}
 	}
 	if state.RetrievalPayload == nil {
 		return CompletionDecision{Ready: false, Reason: "missing retrieval result"}
@@ -112,6 +122,8 @@ func NewAgent(cfg Config) (*Agent, error) {
 
 func (a *Agent) Run(ctx context.Context) error {
 	lastSeen := map[string]time.Time{
+		approvalRequiredTopic:     {},
+		approvalReceivedTopic:     {},
 		retrievalResultTopic:      {},
 		classificationResultTopic: {},
 		responseResultTopic:       {},
@@ -120,7 +132,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	for {
-		for _, topic := range []string{retrievalResultTopic, classificationResultTopic, responseResultTopic} {
+		for _, topic := range []string{approvalRequiredTopic, approvalReceivedTopic, retrievalResultTopic, classificationResultTopic, responseResultTopic} {
 			events, err := a.bus.Poll(ctx, topic, lastSeen[topic], 100)
 			if err != nil {
 				return fmt.Errorf("poll %s events: %w", topic, err)
@@ -139,8 +151,8 @@ func (a *Agent) Run(ctx context.Context) error {
 					continue
 				}
 
-				if err := a.handleResultEvent(ctx, event); err != nil {
-					a.logger.Error("failed to process result event", "error", err, "event_id", event.ID, "topic", event.Topic)
+				if err := a.handleEvent(ctx, event); err != nil {
+					a.logger.Error("failed to process workflow event", "error", err, "event_id", event.ID, "topic", event.Topic)
 					continue
 				}
 				if err := a.store.MarkProcessed(ctx, aggregatorConsumerName, event.ID); err != nil {
@@ -186,6 +198,17 @@ func (a *Agent) failTimedOutWorkflows(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (a *Agent) handleEvent(ctx context.Context, event eventschema.Event) error {
+	switch event.Topic {
+	case approvalRequiredTopic:
+		return a.handleApprovalRequiredEvent(ctx, event)
+	case approvalReceivedTopic:
+		return a.handleApprovalReceivedEvent(ctx, event)
+	default:
+		return a.handleResultEvent(ctx, event)
+	}
 }
 
 func (a *Agent) handleResultEvent(ctx context.Context, event eventschema.Event) error {
@@ -247,9 +270,81 @@ func (a *Agent) handleResultEvent(ctx context.Context, event eventschema.Event) 
 	return nil
 }
 
+func (a *Agent) handleApprovalRequiredEvent(ctx context.Context, event eventschema.Event) error {
+	correlationID, _ := event.Payload["correlation_id"].(string)
+	workflowID, _ := event.Payload["workflow_id"].(string)
+	if correlationID == "" || workflowID == "" {
+		return fmt.Errorf("approval required event missing workflow identifiers")
+	}
+
+	state, err := a.store.MarkApprovalRequired(ctx, event)
+	if err != nil {
+		return fmt.Errorf("record approval required event: %w", err)
+	}
+
+	a.logger.Info("approval required",
+		"workflow_id", state.WorkflowID,
+		"correlation_id", state.CorrelationID,
+		"event_id", event.ID,
+	)
+
+	return nil
+}
+
+func (a *Agent) handleApprovalReceivedEvent(ctx context.Context, event eventschema.Event) error {
+	correlationID, _ := event.Payload["correlation_id"].(string)
+	workflowID, _ := event.Payload["workflow_id"].(string)
+	if correlationID == "" || workflowID == "" {
+		return fmt.Errorf("approval received event missing workflow identifiers")
+	}
+
+	state, err := a.store.MarkApprovalReceived(ctx, event)
+	if err != nil {
+		return fmt.Errorf("record approval received event: %w", err)
+	}
+
+	if state.ApprovalDecision == "rejected" {
+		failureReason := "workflow rejected by operator approval gate"
+		failureEvent := newFailedEvent(state, failureReason)
+		if err := a.bus.Publish(ctx, failureEvent); err != nil {
+			return fmt.Errorf("publish workflow failure after rejection: %w", err)
+		}
+		if err := a.store.MarkFailed(ctx, state.CorrelationID, failureEvent.ID, failureReason); err != nil {
+			return fmt.Errorf("mark workflow failed after rejection: %w", err)
+		}
+
+		a.logger.Warn("workflow rejected by approval",
+			"workflow_id", state.WorkflowID,
+			"correlation_id", state.CorrelationID,
+			"failure_event_id", failureEvent.ID,
+		)
+		return nil
+	}
+
+	decision := EvaluateCompletion(state)
+	if !decision.Ready && shouldRequestResponse(state) {
+		responseTask := newResponseTaskEvent(state)
+		if err := a.bus.Publish(ctx, responseTask); err != nil {
+			return fmt.Errorf("publish response task after approval: %w", err)
+		}
+		if err := a.store.MarkResponseRequested(ctx, state.CorrelationID, responseTask.ID); err != nil {
+			return fmt.Errorf("mark response requested after approval: %w", err)
+		}
+	}
+
+	a.logger.Info("approval received",
+		"workflow_id", state.WorkflowID,
+		"correlation_id", state.CorrelationID,
+		"decision", state.ApprovalDecision,
+	)
+
+	return nil
+}
+
 func shouldRequestResponse(state store.WorkflowState) bool {
 	return state.CompletedEventID == "" &&
 		state.FailedEventID == "" &&
+		(state.ApprovalRequiredEventID == "" || state.ApprovalDecision == "approved") &&
 		state.RetrievalPayload != nil &&
 		state.ClassificationPayload != nil &&
 		state.ResponsePayload == nil &&
@@ -267,6 +362,12 @@ func newCompletionEvent(state store.WorkflowState) eventschema.Event {
 	}
 	if state.Intent != "" {
 		payload["intent"] = state.Intent
+	}
+	if state.ApprovalDecision != "" {
+		payload["approval_decision"] = state.ApprovalDecision
+	}
+	if state.ApprovalComment != "" {
+		payload["approval_comment"] = state.ApprovalComment
 	}
 
 	return eventschema.Event{
@@ -288,6 +389,12 @@ func newFailedEvent(state store.WorkflowState, reason string) eventschema.Event 
 	}
 	if state.Intent != "" {
 		payload["intent"] = state.Intent
+	}
+	if state.ApprovalDecision != "" {
+		payload["approval_decision"] = state.ApprovalDecision
+	}
+	if state.ApprovalComment != "" {
+		payload["approval_comment"] = state.ApprovalComment
 	}
 	if state.RetrievalPayload != nil {
 		payload["retrieval_result"] = state.RetrievalPayload

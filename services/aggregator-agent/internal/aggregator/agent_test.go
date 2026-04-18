@@ -26,6 +26,23 @@ func TestEvaluateCompletion(t *testing.T) {
 			reason: "workflow already failed",
 		},
 		{
+			name: "waiting for approval",
+			state: store.WorkflowState{
+				ApprovalRequiredEventID: "approval-required",
+			},
+			ready:  false,
+			reason: "waiting for operator approval",
+		},
+		{
+			name: "approval rejected",
+			state: store.WorkflowState{
+				ApprovalRequiredEventID: "approval-required",
+				ApprovalDecision:        "rejected",
+			},
+			ready:  false,
+			reason: "approval rejected",
+		},
+		{
 			name:   "missing retrieval",
 			state:  store.WorkflowState{},
 			ready:  false,
@@ -101,6 +118,25 @@ func TestShouldRequestResponse(t *testing.T) {
 				RetrievalPayload: map[string]any{"retrieval_context": "docs"},
 			},
 			want: false,
+		},
+		{
+			name: "approval required but not yet granted",
+			state: store.WorkflowState{
+				ApprovalRequiredEventID: "approval-required",
+				RetrievalPayload:        map[string]any{"retrieval_context": "docs"},
+				ClassificationPayload:   map[string]any{"classification_result": "severity=low"},
+			},
+			want: false,
+		},
+		{
+			name: "approval granted and ready to request response",
+			state: store.WorkflowState{
+				ApprovalRequiredEventID: "approval-required",
+				ApprovalDecision:        "approved",
+				RetrievalPayload:        map[string]any{"retrieval_context": "docs"},
+				ClassificationPayload:   map[string]any{"classification_result": "severity=low"},
+			},
+			want: true,
 		},
 		{
 			name: "already requested",

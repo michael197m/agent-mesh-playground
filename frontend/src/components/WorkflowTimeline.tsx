@@ -17,6 +17,9 @@ function eventSummary(event: Event): string {
   if (typeof payload.classification_result === "string") {
     return payload.classification_result;
   }
+  if (typeof payload.decision === "string") {
+    return `Approval ${payload.decision}`;
+  }
   if (typeof payload.reason === "string") {
     return payload.reason;
   }

@@ -28,13 +28,22 @@ func main() {
 		}
 	}()
 
-	publisher := bus.NewLogPublisher(logger)
+	publisher, err := bus.NewSQLitePublisher(dbPath, logger)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	defer func() {
+		if err := publisher.Close(); err != nil {
+			logger.Printf("close publisher database: %v", err)
+		}
+	}()
+
 	chatHandler := handlers.NewChatHandler(publisher, workflowStore)
-	workflowEventsHandler := handlers.NewWorkflowEventsHandler(workflowStore)
+	workflowHandler := handlers.NewWorkflowHandler(publisher, workflowStore)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/chat", chatHandler)
-	mux.Handle("/api/workflows/", workflowEventsHandler)
+	mux.Handle("/api/workflows/", workflowHandler)
 
 	addr := os.Getenv("API_GATEWAY_ADDR")
 	if addr == "" {

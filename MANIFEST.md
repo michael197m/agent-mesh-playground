@@ -1,69 +1,49 @@
 # MANIFEST.md
 
-This repository implements a local event-driven multi-agent system called Agent Mesh Playground.
+This file captures the current project contract at a glance.
+
+`README.md` is the authoritative document for architecture, runtime setup, and workflow behavior.
 
 ## Purpose
-Learn agent mesh architecture by building a small distributed workflow where specialized agents communicate through events.
+Build and study a local event-driven multi-agent workflow where specialized services coordinate through persisted events.
 
-## Mandatory rules
-- All inter-agent communication must be event-driven
-- Use the shared event envelope for every published message
-- Every workflow must have a correlation_id
-- Every consumer must dedupe by event_id
-- API gateway is the only frontend entrypoint
-- No direct HTTP calls between agents
-- Aggregator owns workflow completion logic
+## Repository Contract
+- All inter-agent communication is event-driven through the shared SQLite event log.
+- The API gateway is the only service the frontend talks to directly.
+- Every workflow has both a `workflow_id` and a `correlation_id`.
+- Every consumer deduplicates by `event_id` using the inbox table.
+- The aggregator owns response fan-in, workflow completion, and workflow failure.
 
-## Main services
-- api-gateway
-- planner-agent
-- retriever-agent
-- classifier-agent
-- responder-agent
-- aggregator-agent
+## Active Services
+- `api-gateway`
+- `planner-agent`
+- `retriever-agent`
+- `classifier-agent`
+- `responder-agent`
+- `aggregator-agent`
 
-## Main flow
-1. frontend calls api-gateway
-2. api-gateway publishes request.received
-3. planner-agent emits task events
-4. specialized agents process tasks
-5. aggregator-agent waits for required completions
-6. aggregator-agent emits workflow.completed
-7. frontend renders the final response and event timeline
-
-## Event topics
-- mesh.request
-- mesh.task.retrieval
-- mesh.task.classification
-- mesh.task.response
-- mesh.result.retrieval
-- mesh.result.classification
-- mesh.result.response
-- mesh.workflow.completed
-- mesh.workflow.failed
+## Active Topics
+- `mesh.request`
+- `mesh.plan`
+- `mesh.task.retrieval`
+- `mesh.task.classification`
+- `mesh.task.response`
+- `mesh.result.retrieval`
+- `mesh.result.classification`
+- `mesh.result.response`
+- `mesh.workflow.completed`
+- `mesh.workflow.failed`
 
 ## Persistence
-SQLite tables:
-- workflows
-- workflow_events
-- workflow_state
-- inbox
+SQLite tables currently used by the system:
+- `workflows`
+- `workflow_events`
+- `workflow_state`
+- `inbox`
 
-## v1 scope
-- Local only
-- Ollama only
-- Keyword retrieval only
+## Scope
+- Local-only runtime
+- Ollama-backed planner, classifier, and responder
+- Keyword-based retrieval with optional Ollama summarization
 - No auth
 - No external integrations
-
-## Priority order for implementation
-1. shared event schema
-2. api-gateway
-3. planner-agent
-4. responder-agent
-5. aggregator-agent
-6. retriever-agent
-7. classifier-agent
-8. frontend workflow timeline
-9. retries + inbox dedupe
-10. approval flow

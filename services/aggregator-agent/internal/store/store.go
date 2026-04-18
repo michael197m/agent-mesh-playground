@@ -18,6 +18,10 @@ type WorkflowState struct {
 	WorkflowID               string
 	CorrelationID            string
 	Intent                   string
+	ApprovalRequiredEventID  string
+	ApprovalReceivedEventID  string
+	ApprovalDecision         string
+	ApprovalComment          string
 	RetrievalPayload         map[string]any
 	ClassificationPayload    map[string]any
 	ResponsePayload          map[string]any
@@ -31,6 +35,8 @@ type WorkflowState struct {
 type Store interface {
 	HasProcessed(ctx context.Context, consumerName, eventID string) (bool, error)
 	RecordResult(ctx context.Context, event eventschema.Event) (WorkflowState, error)
+	MarkApprovalRequired(ctx context.Context, event eventschema.Event) (WorkflowState, error)
+	MarkApprovalReceived(ctx context.Context, event eventschema.Event) (WorkflowState, error)
 	ListTimedOutWorkflows(ctx context.Context, deadline time.Time, limit int) ([]WorkflowState, error)
 	MarkCompleted(ctx context.Context, correlationID, completionEventID string) error
 	MarkFailed(ctx context.Context, correlationID, failureEventID, failureReason string) error
@@ -107,6 +113,14 @@ func (s *SQLiteStore) RecordResult(ctx context.Context, event eventschema.Event)
 	}
 
 	return state, nil
+}
+
+func (s *SQLiteStore) MarkApprovalRequired(ctx context.Context, event eventschema.Event) (WorkflowState, error) {
+	return s.applyApprovalEvent(ctx, event, true)
+}
+
+func (s *SQLiteStore) MarkApprovalReceived(ctx context.Context, event eventschema.Event) (WorkflowState, error) {
+	return s.applyApprovalEvent(ctx, event, false)
 }
 
 func (s *SQLiteStore) MarkCompleted(ctx context.Context, correlationID, completionEventID string) error {
@@ -253,6 +267,10 @@ func (s *SQLiteStore) ListTimedOutWorkflows(ctx context.Context, deadline time.T
 			w.id,
 			w.correlation_id,
 			COALESCE(ws.intent, ''),
+			ws.approval_required_event_id,
+			ws.approval_received_event_id,
+			ws.approval_decision,
+			ws.approval_comment,
 			ws.retrieval_payload,
 			ws.classification_payload,
 			ws.response_payload,
@@ -356,6 +374,10 @@ func (s *SQLiteStore) loadWorkflowStateTx(ctx context.Context, tx *sql.Tx, corre
 			ws.workflow_id,
 			ws.correlation_id,
 			ws.intent,
+			ws.approval_required_event_id,
+			ws.approval_received_event_id,
+			ws.approval_decision,
+			ws.approval_comment,
 			ws.retrieval_payload,
 			ws.classification_payload,
 			ws.response_payload,
@@ -393,6 +415,10 @@ func scanWorkflowStateFromScanner(scanner rowScanner, state *WorkflowState) erro
 	var retrievalPayload sql.NullString
 	var classificationPayload sql.NullString
 	var responsePayload sql.NullString
+	var approvalRequiredEventID sql.NullString
+	var approvalReceivedEventID sql.NullString
+	var approvalDecision sql.NullString
+	var approvalComment sql.NullString
 	var responseRequestedEventID sql.NullString
 	var completedEventID sql.NullString
 	var failedEventID sql.NullString
@@ -404,6 +430,10 @@ func scanWorkflowStateFromScanner(scanner rowScanner, state *WorkflowState) erro
 		&state.WorkflowID,
 		&state.CorrelationID,
 		&state.Intent,
+		&approvalRequiredEventID,
+		&approvalReceivedEventID,
+		&approvalDecision,
+		&approvalComment,
 		&retrievalPayload,
 		&classificationPayload,
 		&responsePayload,
@@ -416,6 +446,10 @@ func scanWorkflowStateFromScanner(scanner rowScanner, state *WorkflowState) erro
 		return err
 	}
 
+	state.ApprovalRequiredEventID = approvalRequiredEventID.String
+	state.ApprovalReceivedEventID = approvalReceivedEventID.String
+	state.ApprovalDecision = approvalDecision.String
+	state.ApprovalComment = approvalComment.String
 	state.RetrievalPayload, _ = decodeJSONMap(retrievalPayload)
 	state.ClassificationPayload, _ = decodeJSONMap(classificationPayload)
 	state.ResponsePayload, _ = decodeJSONMap(responsePayload)
@@ -469,6 +503,10 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 			workflow_id TEXT NOT NULL,
 			correlation_id TEXT PRIMARY KEY,
 			intent TEXT NOT NULL DEFAULT '',
+			approval_required_event_id TEXT,
+			approval_received_event_id TEXT,
+			approval_decision TEXT NOT NULL DEFAULT '',
+			approval_comment TEXT NOT NULL DEFAULT '',
 			retrieval_payload TEXT,
 			classification_payload TEXT,
 			response_payload TEXT,
@@ -496,6 +534,10 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 		{table: "workflow_state", name: "response_requested_event_id", definition: "response_requested_event_id TEXT"},
 		{table: "workflow_state", name: "failed_event_id", definition: "failed_event_id TEXT"},
 		{table: "workflow_state", name: "failure_reason", definition: "failure_reason TEXT"},
+		{table: "workflow_state", name: "approval_required_event_id", definition: "approval_required_event_id TEXT"},
+		{table: "workflow_state", name: "approval_received_event_id", definition: "approval_received_event_id TEXT"},
+		{table: "workflow_state", name: "approval_decision", definition: "approval_decision TEXT NOT NULL DEFAULT ''"},
+		{table: "workflow_state", name: "approval_comment", definition: "approval_comment TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := sqliteutil.EnsureColumn(ctx, s.db, column.table, column.name, column.definition); err != nil {
 			return err
@@ -512,4 +554,82 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *SQLiteStore) applyApprovalEvent(ctx context.Context, event eventschema.Event, required bool) (WorkflowState, error) {
+	correlationID, _ := event.Payload["correlation_id"].(string)
+	workflowID, _ := event.Payload["workflow_id"].(string)
+	intent, _ := event.Payload["intent"].(string)
+	if correlationID == "" || workflowID == "" {
+		return WorkflowState{}, fmt.Errorf("approval event missing workflow identifiers")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowState{}, fmt.Errorf("begin approval transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err = s.ensureWorkflowStateRow(ctx, tx, workflowID, correlationID, intent, event.Timestamp); err != nil {
+		return WorkflowState{}, err
+	}
+
+	if required {
+		const query = `
+			UPDATE workflow_state
+			SET approval_required_event_id = ?,
+				intent = CASE WHEN ? != '' THEN ? ELSE intent END,
+				updated_at = ?
+			WHERE correlation_id = ?
+		`
+		if _, err = tx.ExecContext(ctx, query,
+			event.ID,
+			intent,
+			intent,
+			event.Timestamp.UTC().Format(time.RFC3339Nano),
+			correlationID,
+		); err != nil {
+			return WorkflowState{}, fmt.Errorf("mark approval required: %w", err)
+		}
+	} else {
+		decision, _ := event.Payload["decision"].(string)
+		comment, _ := event.Payload["comment"].(string)
+		const query = `
+			UPDATE workflow_state
+			SET approval_received_event_id = ?,
+				approval_decision = ?,
+				approval_comment = ?,
+				intent = CASE WHEN ? != '' THEN ? ELSE intent END,
+				updated_at = ?
+			WHERE correlation_id = ?
+		`
+		if _, err = tx.ExecContext(ctx, query,
+			event.ID,
+			decision,
+			comment,
+			intent,
+			intent,
+			event.Timestamp.UTC().Format(time.RFC3339Nano),
+			correlationID,
+		); err != nil {
+			return WorkflowState{}, fmt.Errorf("mark approval received: %w", err)
+		}
+	}
+
+	if err = s.touchWorkflowProgress(ctx, tx, workflowID, event.Timestamp); err != nil {
+		return WorkflowState{}, err
+	}
+
+	state, err := s.loadWorkflowStateTx(ctx, tx, correlationID)
+	if err != nil {
+		return WorkflowState{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return WorkflowState{}, fmt.Errorf("commit approval transaction: %w", err)
+	}
+	return state, nil
 }

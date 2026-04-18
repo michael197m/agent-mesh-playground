@@ -11,6 +11,7 @@ const cards: AgentCard[] = [
   { id: "planner", title: "Planner", topicPrefix: "mesh.plan" },
   { id: "retriever", title: "Retriever", topicPrefix: "mesh.result.retrieval" },
   { id: "classifier", title: "Classifier", topicPrefix: "mesh.result.classification" },
+  { id: "approval", title: "Approval", topicPrefix: "mesh.approval." },
   { id: "responder", title: "Responder", topicPrefix: "mesh.result.response" },
   { id: "aggregator", title: "Aggregator", topicPrefix: "mesh.workflow." },
 ];

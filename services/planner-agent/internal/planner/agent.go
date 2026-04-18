@@ -21,6 +21,7 @@ const (
 	planTopic                = "mesh.plan"
 	retrievalTopic           = "mesh.task.retrieval"
 	classificationTopic      = "mesh.task.classification"
+	approvalTopic            = "mesh.approval.required"
 	responseTopic            = "mesh.task.response"
 	requestReceivedEventName = "request.received"
 	planCreatedEventName     = "plan.created"
@@ -161,6 +162,7 @@ func (a *Agent) handleRequestEvent(ctx context.Context, event eventschema.Event)
 	if err != nil {
 		return fmt.Errorf("parse planner output: %w", err)
 	}
+	plan = ensureApprovalTask(plan, prompt)
 
 	if err := a.bus.Publish(ctx, newEvent(planTopic, workflowID, correlationID, map[string]any{
 		"event_name":     planCreatedEventName,
@@ -186,7 +188,7 @@ func (a *Agent) handleRequestEvent(ctx context.Context, event eventschema.Event)
 			"task_type":      task.Type,
 			"reason":         task.Reason,
 		}
-		if task.Type == "retrieval" || task.Type == "classification" || task.Type == "response" {
+		if task.Type == "retrieval" || task.Type == "classification" || task.Type == "response" || task.Type == "approval" {
 			payload["prompt"] = prompt
 		}
 
@@ -251,11 +253,49 @@ func taskPublication(taskType string) (topic string, eventName string, err error
 		return retrievalTopic, "task.retrieval.requested", nil
 	case "classification":
 		return classificationTopic, "task.classification.requested", nil
+	case "approval":
+		return approvalTopic, "approval.required", nil
 	case "response":
 		return responseTopic, "task.response.requested", nil
 	default:
 		return "", "", fmt.Errorf("unsupported task type %q", taskType)
 	}
+}
+
+func ensureApprovalTask(plan plannerOutput, prompt string) plannerOutput {
+	if !requiresApproval(prompt) {
+		return plan
+	}
+	for _, task := range plan.Tasks {
+		if task.Type == "approval" {
+			return plan
+		}
+	}
+	plan.Tasks = append(plan.Tasks, plannedTask{
+		Type:   "approval",
+		Reason: "operator approval is required before taking risky remediation steps",
+	})
+	return plan
+}
+
+func requiresApproval(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	for _, marker := range []string{
+		"rollback",
+		"production",
+		"prod ",
+		"firewall",
+		"shutdown",
+		"disable",
+		"delete",
+		"restart",
+		"change window",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func newEvent(topic, workflowID, correlationID string, payload map[string]any) eventschema.Event {

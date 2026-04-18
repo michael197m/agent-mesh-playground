@@ -4,6 +4,8 @@ Agent Mesh Playground is a local event-driven multi-agent workflow system.
 
 It is built to show how a frontend, an API gateway, and multiple specialized backend agents can cooperate through events instead of direct service-to-service HTTP calls.
 
+`README.md` is the authoritative project document. [`MANIFEST.md`](MANIFEST.md) is a short contract summary for the current repo state.
+
 ## What This Repo Does
 
 The application accepts an operator-style request from a React frontend, starts a workflow in the API gateway, and then routes work across multiple Go services:
@@ -385,6 +387,31 @@ tail -n 50 runtime/logs/api-gateway.log
 tail -n 50 runtime/logs/planner-agent.log
 tail -n 50 runtime/logs/aggregator-agent.log
 ```
+
+## Testing
+
+Fast API gateway checks:
+
+```bash
+cd /home/michael/repos/agent-mesh-playground/services/api-gateway
+GOCACHE=/tmp/go-build go test ./...
+```
+
+Full end-to-end workflow harness:
+
+```bash
+cd /home/michael/repos/agent-mesh-playground/services/api-gateway
+GOCACHE=/tmp/go-build go test -tags=integration -run TestWorkflowCompletesAcrossServices -count=1
+```
+
+Failure-path workflow harness:
+
+```bash
+cd /home/michael/repos/agent-mesh-playground/services/api-gateway
+GOCACHE=/tmp/go-build go test -tags=integration -run TestWorkflowFailsWhenResponderIsUnavailable -count=1
+```
+
+The integration harness builds temporary binaries for the backend services, starts them against a temporary SQLite database, uses a fake Ollama-compatible HTTP server, submits a real `POST /api/chat` request, and waits for either `mesh.workflow.completed` or `mesh.workflow.failed`.
 
 ## Current Limitations
 
