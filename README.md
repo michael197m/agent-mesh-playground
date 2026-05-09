@@ -16,7 +16,7 @@ The application accepts an operator-style request from a React frontend, starts 
 - `aggregator-agent` coordinates workflow state and fan-in
 - `responder-agent` generates the final synthesized response
 
-All services communicate through events stored in a shared SQLite database.
+All services communicate through events stored in a shared SQLite database
 
 ## Architecture
 
